@@ -10,7 +10,10 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
-    "indexer": "tsx indexer/src/indexer.ts"
+    "indexer": "tsx indexer/src/indexer.ts",
+    "stack:up": "docker-compose up -d && sleep 5 && docker-compose exec web npx prisma migrate deploy || docker-compose exec web npx prisma db push",
+    "stack:down": "docker-compose down",
+    "stack:reindex": "docker-compose exec -T indexer node scripts/reindex.js && docker-compose restart indexer"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
