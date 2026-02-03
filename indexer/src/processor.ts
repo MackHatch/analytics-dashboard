@@ -140,9 +140,52 @@ async function handleWithdrawn(
     where: { eventId },
   })
 
-  if (!existingWithdrawal) {
-    // Create withdrawal record first
-    await prisma.withdrawal.create({
+  if (existingWithdrawal) {
+    // Withdrawal already processed, just update stream balance
+    const totalWithdrawn = await prisma.withdrawal.aggregate({
+      where: {
+        chainId: config.CHAIN_ID,
+        contractAddress: config.CONTRACT_ADDRESS.toLowerCase(),
+        streamId: args.streamId.toString(),
+      },
+      _sum: { amount: true },
+    })
+
+    await prisma.stream.update({
+      where: {
+        chainId_contractAddress_id: {
+          chainId: config.CHAIN_ID,
+          contractAddress: config.CONTRACT_ADDRESS.toLowerCase(),
+          id: args.streamId.toString(),
+        },
+      },
+      data: {
+        withdrawn: totalWithdrawn._sum.amount || 0n,
+      },
+    })
+    return
+  }
+
+  // Verify stream exists before creating withdrawal
+  const stream = await prisma.stream.findUnique({
+    where: {
+      chainId_contractAddress_id: {
+        chainId: config.CHAIN_ID,
+        contractAddress: config.CONTRACT_ADDRESS.toLowerCase(),
+        id: args.streamId.toString(),
+      },
+    },
+  })
+
+  if (!stream) {
+    console.warn(`Stream ${args.streamId} not found for withdrawal event ${eventId}. Skipping.`)
+    return
+  }
+
+  // Use transaction to ensure atomicity: create withdrawal and update stream together
+  await prisma.$transaction(async (tx) => {
+    // Create withdrawal record
+    await tx.withdrawal.create({
       data: {
         chainId: config.CHAIN_ID,
         contractAddress: config.CONTRACT_ADDRESS.toLowerCase(),
@@ -154,29 +197,30 @@ async function handleWithdrawn(
         timestamp: BigInt(timestamp),
       },
     })
-  }
 
-  // Update stream withdrawn amount (sum all withdrawals)
-  const totalWithdrawn = await prisma.withdrawal.aggregate({
-    where: {
-      chainId: config.CHAIN_ID,
-      contractAddress: config.CONTRACT_ADDRESS.toLowerCase(),
-      streamId: args.streamId.toString(),
-    },
-    _sum: { amount: true },
-  })
-
-  await prisma.stream.update({
-    where: {
-      chainId_contractAddress_id: {
+    // Calculate total withdrawn (including the new withdrawal)
+    const totalWithdrawn = await tx.withdrawal.aggregate({
+      where: {
         chainId: config.CHAIN_ID,
         contractAddress: config.CONTRACT_ADDRESS.toLowerCase(),
-        id: args.streamId.toString(),
+        streamId: args.streamId.toString(),
       },
-    },
-    data: {
-      withdrawn: totalWithdrawn._sum.amount || 0n,
-    },
+      _sum: { amount: true },
+    })
+
+    // Update stream withdrawn amount
+    await tx.stream.update({
+      where: {
+        chainId_contractAddress_id: {
+          chainId: config.CHAIN_ID,
+          contractAddress: config.CONTRACT_ADDRESS.toLowerCase(),
+          id: args.streamId.toString(),
+        },
+      },
+      data: {
+        withdrawn: totalWithdrawn._sum.amount || 0n,
+      },
+    })
   })
 }
 
