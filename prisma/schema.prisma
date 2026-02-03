@@ -1,0 +1,115 @@
+// Prisma schema for Streaming Payments Analytics
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Track indexing progress per chain + contract
+model IndexerState {
+  id                String   @id @default(cuid())
+  chainId          BigInt   // e.g., 11155111 (Sepolia)
+  contractAddress  String   // Contract address (lowercase)
+  lastProcessedBlock BigInt // Last block successfully processed
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([chainId, contractAddress])
+  @@index([chainId, contractAddress])
+}
+
+// Normalized stream state (derived from events)
+model Stream {
+  id              String   @id // streamId as hex string
+  chainId         BigInt
+  contractAddress String
+  
+  // Stream properties
+  sender          String   // address
+  recipient       String   // address
+  token           String   // token address (or NATIVE_TOKEN constant)
+  start           BigInt   // timestamp
+  end             BigInt   // timestamp
+  cliff           BigInt   // timestamp (0 if no cliff)
+  amount          BigInt   // total amount in wei
+  withdrawn       BigInt   // total withdrawn so far
+  canceled        Boolean  @default(false)
+  refundable      Boolean
+  
+  // Metadata
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relations
+  events          Event[]
+  withdrawals     Withdrawal[]
+
+  @@unique([chainId, contractAddress, id])
+  @@index([sender])
+  @@index([recipient])
+  @@index([token])
+  @@index([chainId, contractAddress])
+}
+
+// Raw decoded events (immutable log)
+model Event {
+  id              String   @id // txHash:logIndex (unique identifier)
+  chainId         BigInt
+  contractAddress String
+  streamId        String?  // nullable (FeeUpdated has no streamId)
+  
+  // Block data
+  blockNumber     BigInt
+  blockHash       String
+  transactionHash String
+  logIndex        Int
+  transactionIndex Int
+  
+  // Event data
+  eventType       String   // "StreamCreated" | "Withdrawn" | "Canceled" | "Transferred" | "FeeUpdated"
+  args            Json     // Decoded event args as JSON
+  
+  // Timestamps
+  timestamp       BigInt   // block timestamp
+  createdAt       DateTime @default(now())
+  
+  // Relations
+  stream          Stream?  @relation(fields: [chainId, contractAddress, streamId], references: [chainId, contractAddress, id])
+
+  @@unique([chainId, contractAddress, transactionHash, logIndex])
+  @@index([streamId])
+  @@index([blockNumber])
+  @@index([eventType])
+  @@index([chainId, contractAddress])
+}
+
+// Withdrawal records (for analytics)
+model Withdrawal {
+  id              String   @id @default(cuid())
+  chainId         BigInt
+  contractAddress String
+  streamId        String
+  
+  // Withdrawal data
+  recipient       String   // address
+  amount          BigInt   // amount withdrawn (including fees)
+  eventId         String   // Reference to Event.id
+  
+  // Timestamps
+  blockNumber     BigInt
+  timestamp       BigInt
+  createdAt       DateTime @default(now())
+  
+  // Relations
+  stream          Stream   @relation(fields: [chainId, contractAddress, streamId], references: [chainId, contractAddress, id])
+  event           Event    @relation(fields: [eventId], references: [id])
+
+  @@index([streamId])
+  @@index([recipient])
+  @@index([timestamp])
+  @@index([chainId, contractAddress])
+}
